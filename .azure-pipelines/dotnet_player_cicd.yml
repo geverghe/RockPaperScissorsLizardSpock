@@ -42,9 +42,6 @@ stages:
         tags: |
           $(tag)
           
-    - publish: manifests
-      artifact: manifests
-
 - stage: DeployToAKS
   displayName: Deploy to AKS
   dependsOn: Build
