@@ -1,19 +1,129 @@
-# Starter pipeline
-# Start with a minimal pipeline that you can customize to build and deploy your code.
-# Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
+# Deploy to Azure Kubernetes Service
+# Build and push image to Azure Container Registry; Deploy to Azure Kubernetes Service
+# https://docs.microsoft.com/azure/devops/pipelines/languages/docker
 
 trigger:
 - master
 
-pool:
-  vmImage: 'ubuntu-latest'
+resources:
+- repo: self
 
-steps:
-- script: echo Hello, world!
-  displayName: 'Run a one-line script'
+variables:
 
-- script: |
-    echo Add other tasks to build, test, and deploy your project.
-    echo See https://aka.ms/yaml
-  displayName: 'Run a multi-line script'
+  # Container registry service connection established during pipeline creation
+  dockerRegistryServiceConnection: '80b42a64-ece5-4501-b7c1-a09905f3cc8b'
+  imageRepository: 'RockPaperScissorsLizardSpoc'
+  containerRegistry: 'rpslsacrkd5bvvipumlti.azurecr.io'
+  dockerfilePath: 'Source/Services/RPSLS.DotNetPlayer.Api/Dockerfile'
+  tag: '$(Build.BuildId)'
+  imagePullSecret: 'forresterdemosecret'
+  acrname: rpslsacrkd5bvvipumlti
+  resourceGroup: georgeverghesesandbox
+
+  # Agent VM image name
+  vmImageName: 'ubuntu-16.04'
+
+stages:
+- stage: Build
+  displayName: Build stage - Container
+  jobs:  
+  - job: Build
+    displayName: Build
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: Docker@2
+      displayName: Build and push an image to container registry
+      inputs:
+        command: buildAndPush
+        repository: $(imageRepository)
+        dockerfile: $(dockerfilePath)
+        containerRegistry: $(dockerRegistryServiceConnection)
+        tags: |
+          $(tag)
+          
+    - upload: manifests
+      artifact: manifests
+
+- stage: DeployToAKS
+  displayName: Deploy to AKS
+  dependsOn: Build
+
+  jobs:
+  - deployment: Deploy
+    displayName: Deploy to namespace
+    pool:
+      vmImage: $(vmImageName)
+    environment: 'Production.contoso-aks'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: KubernetesManifest@0
+            displayName: Create imagePullSecret
+            inputs:
+              action: createSecret
+              secretName: $(imagePullSecret)
+              dockerRegistryEndpoint: $(dockerRegistryServiceConnection)             
+
+          - task: KubernetesManifest@0
+            displayName: Deploy to Kubernetes cluster
+            inputs:
+              action: deploy
+              manifests: |
+                $(Pipeline.Workspace)/manifests/deployment.yml
+                $(Pipeline.Workspace)/manifests/service.yml
+              imagePullSecrets: |
+                $(imagePullSecret)
+              containers: |
+                $(containerRegistry)/$(imageRepository):$(tag)
+
+          - task: AzureCLI@2
+            displayName: Install latest Helm Chart
+            inputs:
+              azureSubscription: 'RMPM (afc11291-9826-46be-b852-70349146ddf8)'
+              scriptType: 'batch'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 > get_helm.sh
+                chmod 700 get_helm.sh
+                ./get_helm.sh
+                az acr helm repo add -n $(acrname)
+
+          - task: AzureCLI@2
+            displayName: Package Helm Chart
+            inputs:
+              azureSubscription: 'RMPM (afc11291-9826-46be-b852-70349146ddf8)'
+              scriptType: 'batch'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                helm package  Deploy/helm/dotnet-player -d Deploy/helm/__charts --version 1.0.0-$(Build.BuildId)
+          
+          - task: AzureCLI@2
+            displayName: Upload chart to ACR
+            inputs:
+              azureSubscription: 'RMPM (afc11291-9826-46be-b852-70349146ddf8)'
+              scriptType: 'batch'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az acr helm push Deploy/helm/__charts/dotnet-player-1.0.0-$(Build.BuildId).tgz -n $(acrname)
+
+          - task: AzureCLI@2
+            displayName: Generate Config File
+            inputs:
+              azureSubscription: 'RMPM (afc11291-9826-46be-b852-70349146ddf8)'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az extension add --name application-insights
+                Deploy/powershell/Generate-Config.ps1 -gvaluesTemplate gvalues.template.gh -resourceGroup $(resourceGroup) -outputFile _values-gh.yaml 
+
+          - task: AzureCLI@2
+            displayName: Install Helm Chart
+            inputs:
+              azureSubscription: 'RMPM (afc11291-9826-46be-b852-70349146ddf8)'
+              scriptType: 'batch'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                helm repo update
+                helm upgrade --install -f Deploy/powershell/_values-gh.yaml --set image.repository=$(acrname).azurecr.io/dotnet.player --set image.tag=gh-$(Build.BuildId)  --set replicaCount=2  dotnet-player  $(acrname)/dotnet-player --version=1.0.0-$(Build.BuildId) 
