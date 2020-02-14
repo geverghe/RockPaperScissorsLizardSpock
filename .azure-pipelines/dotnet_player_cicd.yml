@@ -42,7 +42,7 @@ stages:
         tags: |
           $(tag)
           
-    - upload: manifests
+    - publish: manifests
       artifact: manifests
 
 - stage: DeployToAKS
@@ -97,7 +97,7 @@ stages:
               scriptType: 'batch'
               scriptLocation: 'inlineScript'
               inlineScript: |
-                helm package  Deploy/helm/dotnet-player -d Deploy/helm/__charts --version 1.0.0-$(Build.BuildId)
+                helm package  Deploy/helm/dotnet-player -d Deploy/helm/__charts --version 1.0.0-$(Build.SourceVersion)
           
           - task: AzureCLI@2
             displayName: Upload chart to ACR
@@ -106,7 +106,7 @@ stages:
               scriptType: 'batch'
               scriptLocation: 'inlineScript'
               inlineScript: |
-                az acr helm push Deploy/helm/__charts/dotnet-player-1.0.0-$(Build.BuildId).tgz -n $(acrname)
+                az acr helm push Deploy/helm/__charts/dotnet-player-1.0.0-$(Build.SourceVersion).tgz -n $(acrname)
 
           - task: AzureCLI@2
             displayName: Generate Config File
@@ -126,4 +126,4 @@ stages:
               scriptLocation: 'inlineScript'
               inlineScript: |
                 helm repo update
-                helm upgrade --install -f Deploy/powershell/_values-gh.yaml --set image.repository=$(acrname).azurecr.io/dotnet.player --set image.tag=gh-$(Build.BuildId)  --set replicaCount=2  dotnet-player  $(acrname)/dotnet-player --version=1.0.0-$(Build.BuildId) 
+                helm upgrade --install -f Deploy/powershell/_values-gh.yaml --set image.repository=$(acrname).azurecr.io/dotnet.player --set image.tag=gh-$(Build.SourceVersion)  --set replicaCount=2  dotnet-player  $(acrname)/dotnet-player --version=1.0.0-$(Build.SourceVersion) 
